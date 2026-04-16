@@ -1,0 +1,12 @@
+[Unit]
+Description=Timer: watcher biletow Teatr Slowackiego
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=teatr-bilety.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily smoke check: watcher biletow Teatr Slowackiego
+
+[Timer]
+OnCalendar=*-*-* 08:30:00
+RandomizedDelaySec=15m
+Unit=teatr-bilety-smoke.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

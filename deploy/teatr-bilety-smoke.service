@@ -1,0 +1,20 @@
+[Unit]
+Description=Smoke check watchera biletow Teatr Slowackiego
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/teatr-bilety-watcher
+EnvironmentFile=/opt/teatr-bilety-watcher/.env
+ExecStart=/opt/teatr-bilety-watcher/.venv/bin/python -m watcher smoke-check
+User=ubuntu
+Group=ubuntu
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+
