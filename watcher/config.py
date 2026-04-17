@@ -25,6 +25,16 @@ def _list_env(name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     monitored_plays: list[str]
@@ -46,6 +56,21 @@ class Settings:
     facebook_keywords_include: list[str]
     facebook_keywords_exclude: list[str]
     facebook_max_posts: int
+    enable_price_monitoring: bool
+    price_source_urls: list[str]
+    price_trend_image_urls: list[str]
+    price_query_label: str
+    price_keywords_include: list[str]
+    price_keywords_exclude: list[str]
+    price_preferred_capacity_tb: float
+    price_capacity_soft_tolerance_tb: float
+    price_relevance_threshold: float
+    price_max_candidates_per_source: int
+    price_min_observations_for_trend: int
+    price_trend_window_size: int
+    price_drop_alert_percent: float
+    price_rise_alert_percent: float
+    price_alert_cooldown_hours: int
     smoke_notify_on_success: bool
     smoke_notify_on_failure: bool
     ntfy_server: str
@@ -54,9 +79,11 @@ class Settings:
     ntfy_username: str
     ntfy_password: str
     ntfy_priority_alerts: str
+    ntfy_priority_price_alerts: str
     ntfy_priority_smoke_success: str
     ntfy_priority_smoke_failure: str
     ntfy_tags_alerts: list[str]
+    ntfy_tags_price_alerts: list[str]
     ntfy_tags_smoke: list[str]
     signal_cli_path: str
     signal_account: str
@@ -71,6 +98,7 @@ class Settings:
     email_to: list[str]
     email_subject_prefix: str
     email_fallback_on_ticket_alerts: bool
+    email_fallback_on_price_alerts: bool
     telegram_bot_token: str
     telegram_chat_id: str
 
@@ -152,6 +180,27 @@ def load_settings() -> Settings:
         facebook_keywords_include=_list_env("FACEBOOK_KEYWORDS_INCLUDE", plays),
         facebook_keywords_exclude=_list_env("FACEBOOK_KEYWORDS_EXCLUDE", []),
         facebook_max_posts=int(os.getenv("FACEBOOK_MAX_POSTS", "25")),
+        enable_price_monitoring=_bool_env("ENABLE_PRICE_MONITORING", True),
+        price_source_urls=_list_env("PRICE_SOURCE_URLS", []),
+        price_trend_image_urls=_list_env("PRICE_TREND_IMAGE_URLS", []),
+        price_query_label=os.getenv("PRICE_QUERY_LABEL", "NVMe SSD M.2").strip(),
+        price_keywords_include=_list_env(
+            "PRICE_KEYWORDS_INCLUDE",
+            ["ssd", "nvme", "m.2", "m2", "pcie"],
+        ),
+        price_keywords_exclude=_list_env(
+            "PRICE_KEYWORDS_EXCLUDE",
+            ["adapter", "obudowa", "kabel", "heatsink", "radiator"],
+        ),
+        price_preferred_capacity_tb=_float_env("PRICE_PREFERRED_CAPACITY_TB", 4.0),
+        price_capacity_soft_tolerance_tb=_float_env("PRICE_CAPACITY_SOFT_TOLERANCE_TB", 2.0),
+        price_relevance_threshold=_float_env("PRICE_RELEVANCE_THRESHOLD", 0.45),
+        price_max_candidates_per_source=int(os.getenv("PRICE_MAX_CANDIDATES_PER_SOURCE", "25")),
+        price_min_observations_for_trend=int(os.getenv("PRICE_MIN_OBSERVATIONS_FOR_TREND", "4")),
+        price_trend_window_size=int(os.getenv("PRICE_TREND_WINDOW_SIZE", "8")),
+        price_drop_alert_percent=_float_env("PRICE_DROP_ALERT_PERCENT", 5.0),
+        price_rise_alert_percent=_float_env("PRICE_RISE_ALERT_PERCENT", 8.0),
+        price_alert_cooldown_hours=int(os.getenv("PRICE_ALERT_COOLDOWN_HOURS", "24")),
         smoke_notify_on_success=_bool_env("SMOKE_NOTIFY_ON_SUCCESS", False),
         smoke_notify_on_failure=_bool_env("SMOKE_NOTIFY_ON_FAILURE", True),
         ntfy_server=os.getenv("NTFY_SERVER", "https://ntfy.sh").strip().rstrip("/"),
@@ -160,9 +209,11 @@ def load_settings() -> Settings:
         ntfy_username=os.getenv("NTFY_USERNAME", "").strip(),
         ntfy_password=os.getenv("NTFY_PASSWORD", "").strip(),
         ntfy_priority_alerts=os.getenv("NTFY_PRIORITY_ALERTS", "high").strip(),
+        ntfy_priority_price_alerts=os.getenv("NTFY_PRIORITY_PRICE_ALERTS", "high").strip(),
         ntfy_priority_smoke_success=os.getenv("NTFY_PRIORITY_SMOKE_SUCCESS", "default").strip(),
         ntfy_priority_smoke_failure=os.getenv("NTFY_PRIORITY_SMOKE_FAILURE", "urgent").strip(),
         ntfy_tags_alerts=_list_env("NTFY_TAGS_ALERTS", ["ticket", "theatre"]),
+        ntfy_tags_price_alerts=_list_env("NTFY_TAGS_PRICE_ALERTS", ["price", "ssd", "nvme"]),
         ntfy_tags_smoke=_list_env("NTFY_TAGS_SMOKE", ["warning", "monitoring"]),
         signal_cli_path=os.getenv("SIGNAL_CLI_PATH", "signal-cli").strip(),
         signal_account=os.getenv("SIGNAL_ACCOUNT", "").strip(),
@@ -175,8 +226,9 @@ def load_settings() -> Settings:
         smtp_use_tls=_bool_env("SMTP_USE_TLS", True),
         email_from=os.getenv("EMAIL_FROM", "").strip(),
         email_to=_list_env("EMAIL_TO", []),
-        email_subject_prefix=os.getenv("EMAIL_SUBJECT_PREFIX", "[bilety]").strip(),
+        email_subject_prefix=os.getenv("EMAIL_SUBJECT_PREFIX", "[tracker]").strip(),
         email_fallback_on_ticket_alerts=_bool_env("EMAIL_FALLBACK_ON_TICKET_ALERTS", False),
+        email_fallback_on_price_alerts=_bool_env("EMAIL_FALLBACK_ON_PRICE_ALERTS", True),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
     )

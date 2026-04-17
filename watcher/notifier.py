@@ -8,7 +8,7 @@ from datetime import datetime
 
 import requests
 
-from .models import Alert
+from .models import Alert, PriceTrendAlert
 from .utils import normalize_space
 
 
@@ -72,6 +72,63 @@ def format_alerts(alerts: list[Alert]) -> str:
 
 def format_alerts_plain(alerts: list[Alert]) -> str:
     lines = _build_alert_lines(alerts, html_mode=False)
+    return "\n".join(lines).strip()
+
+
+def _trend_label(value: str) -> str:
+    if value == "drop":
+        return "SPADEK"
+    if value == "rise":
+        return "WZROST"
+    return value.upper()
+
+
+def _capacity_label(capacity_tb: float | None) -> str:
+    if capacity_tb is None:
+        return "?"
+    if abs(capacity_tb - round(capacity_tb)) < 0.01:
+        return f"{int(round(capacity_tb))}TB"
+    return f"{capacity_tb:.1f}TB"
+
+
+def _build_price_alert_lines(alerts: list[PriceTrendAlert], html_mode: bool) -> list[str]:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if html_mode:
+        lines: list[str] = [f"<b>Price trend update</b> ({ts})", ""]
+    else:
+        lines = [f"Price trend update ({ts})", ""]
+
+    for alert in alerts:
+        current = alert.current
+        trend = _trend_label(alert.trend_type)
+        sign = "+" if alert.change_percent > 0 else ""
+        baseline = f"{alert.baseline_price:.2f} {current.currency}"
+        current_price = f"{current.price:.2f} {current.currency}"
+        cap = _capacity_label(current.capacity_tb)
+        line = (
+            f"{trend} | {current.title} | {current_price} | "
+            f"vs mediana {baseline} ({sign}{alert.change_percent:.2f}%) | cap~{cap}"
+        )
+        if html_mode:
+            lines.append(f"• {html.escape(line)}")
+            if current.url:
+                lines.append(f"  <a href=\"{html.escape(current.url)}\">link</a>")
+        else:
+            lines.append(f"* {line}")
+            if current.url:
+                lines.append(f"  link: {current.url}")
+        lines.append(f"  source: {current.source}, samples={alert.samples}, relevance={current.relevance:.2f}")
+        lines.append("")
+    return lines
+
+
+def format_price_alerts(alerts: list[PriceTrendAlert]) -> str:
+    lines = _build_price_alert_lines(alerts, html_mode=True)
+    return "\n".join(lines).strip()
+
+
+def format_price_alerts_plain(alerts: list[PriceTrendAlert]) -> str:
+    lines = _build_price_alert_lines(alerts, html_mode=False)
     return "\n".join(lines).strip()
 
 

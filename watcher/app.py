@@ -5,10 +5,11 @@ import json
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Callable
 
 from .config import load_settings
-from .models import TicketEvent
+from .models import PriceObservation, TicketEvent
 from .notifier import (
     EmailNotifier,
     NtfyNotifier,
@@ -16,12 +17,22 @@ from .notifier import (
     TelegramNotifier,
     format_alerts,
     format_alerts_plain,
+    format_price_alerts,
+    format_price_alerts_plain,
 )
 from .sources import SourceClient
 from .state import StateStore
 from .utils import now_iso
 
 logger = logging.getLogger("bilety-watcher")
+
+
+@dataclass(frozen=True)
+class NotifierBundle:
+    ntfy: NtfyNotifier
+    signal: SignalNotifier
+    email: EmailNotifier
+    telegram: TelegramNotifier
 
 
 def _dedupe(events: list[TicketEvent]) -> list[TicketEvent]:
@@ -51,6 +62,40 @@ def _split_message(message: str, chunk_size: int = 3800) -> list[str]:
     return chunks
 
 
+def _build_notifiers(settings) -> NotifierBundle:
+    return NotifierBundle(
+        ntfy=NtfyNotifier(
+            server=settings.ntfy_server,
+            topic=settings.ntfy_topic,
+            token=settings.ntfy_token,
+            username=settings.ntfy_username,
+            password=settings.ntfy_password,
+            timeout_seconds=settings.request_timeout_seconds,
+        ),
+        signal=SignalNotifier(
+            cli_path=settings.signal_cli_path,
+            account=settings.signal_account,
+            recipients=settings.signal_recipients,
+            timeout_seconds=settings.signal_timeout_seconds,
+        ),
+        email=EmailNotifier(
+            smtp_host=settings.smtp_host,
+            smtp_port=settings.smtp_port,
+            smtp_username=settings.smtp_username,
+            smtp_password=settings.smtp_password,
+            smtp_use_tls=settings.smtp_use_tls,
+            sender=settings.email_from,
+            recipients=settings.email_to,
+            timeout_seconds=settings.request_timeout_seconds,
+        ),
+        telegram=TelegramNotifier(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            timeout_seconds=settings.request_timeout_seconds,
+        ),
+    )
+
+
 def _fetch_events(client: SourceClient) -> list[TicketEvent]:
     events: list[TicketEvent] = []
     jobs: list[tuple[str, Callable[[], list[TicketEvent]]]] = [
@@ -70,6 +115,14 @@ def _fetch_events(client: SourceClient) -> list[TicketEvent]:
         except Exception as exc:  # noqa: BLE001
             logger.exception("%s: fetch failed: %s", source_name, exc)
     return _dedupe(events)
+
+
+def _fetch_price_observations(client: SourceClient) -> list[PriceObservation]:
+    if not client.settings.enable_price_monitoring:
+        return []
+    if not client.settings.price_source_urls:
+        return []
+    return client.fetch_price_observations()
 
 
 def _build_smoke_report(
@@ -104,7 +157,12 @@ def _build_smoke_report(
             f"telegram={settings.telegram_enabled}"
         )
     )
-    lines.append(f"sources: biletomat={settings.enable_biletomat}, facebook={settings.enable_facebook}")
+    lines.append(
+        "sources: "
+        f"biletomat={settings.enable_biletomat}, "
+        f"facebook={settings.enable_facebook}, "
+        f"price_monitoring={settings.enable_price_monitoring and bool(settings.price_source_urls)}"
+    )
     return "\n".join(lines).strip()
 
 
@@ -171,35 +229,7 @@ def _send_notification_with_fallback(
 def run_smoke_check(force_notify: bool = False) -> int:
     settings = load_settings()
     client = SourceClient(settings)
-    ntfy_notifier = NtfyNotifier(
-        server=settings.ntfy_server,
-        topic=settings.ntfy_topic,
-        token=settings.ntfy_token,
-        username=settings.ntfy_username,
-        password=settings.ntfy_password,
-        timeout_seconds=settings.request_timeout_seconds,
-    )
-    telegram_notifier = TelegramNotifier(
-        bot_token=settings.telegram_bot_token,
-        chat_id=settings.telegram_chat_id,
-        timeout_seconds=settings.request_timeout_seconds,
-    )
-    signal_notifier = SignalNotifier(
-        cli_path=settings.signal_cli_path,
-        account=settings.signal_account,
-        recipients=settings.signal_recipients,
-        timeout_seconds=settings.signal_timeout_seconds,
-    )
-    email_notifier = EmailNotifier(
-        smtp_host=settings.smtp_host,
-        smtp_port=settings.smtp_port,
-        smtp_username=settings.smtp_username,
-        smtp_password=settings.smtp_password,
-        smtp_use_tls=settings.smtp_use_tls,
-        sender=settings.email_from,
-        recipients=settings.email_to,
-        timeout_seconds=settings.request_timeout_seconds,
-    )
+    notifiers = _build_notifiers(settings)
 
     passed: list[str] = []
     failed: list[str] = []
@@ -213,8 +243,20 @@ def run_smoke_check(force_notify: bool = False) -> int:
         checks.append(("biletomat", client.fetch_biletomat_events))
     if settings.enable_facebook:
         checks.append(("facebook", client.fetch_facebook_events))
+    if settings.enable_price_monitoring and settings.price_source_urls:
+        checks.append(("price_monitoring", lambda: []))
 
     for check_name, fn in checks:
+        if check_name == "price_monitoring":
+            try:
+                observations = _fetch_price_observations(client)
+                passed.append(f"price_monitoring: fetch ok ({len(observations)} observations)")
+                if not observations:
+                    warnings.append("price_monitoring: 0 obserwacji (sprawdź PRICE_SOURCE_URLS / selekcję)")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("smoke %s failed: %s", check_name, exc)
+                failed.append(f"{check_name}: {exc}")
+            continue
         try:
             events = fn()
             passed.append(f"{check_name}: fetch ok ({len(events)} events)")
@@ -241,14 +283,14 @@ def run_smoke_check(force_notify: bool = False) -> int:
             + "</pre>"
         )
         route = _send_notification_with_fallback(
-            ntfy_notifier=ntfy_notifier,
-            signal_notifier=signal_notifier,
-            email_notifier=email_notifier,
-            telegram_notifier=telegram_notifier,
+            ntfy_notifier=notifiers.ntfy,
+            signal_notifier=notifiers.signal,
+            email_notifier=notifiers.email,
+            telegram_notifier=notifiers.telegram,
             plain_text=f"SMOKE CHECK\n\n{report}",
             html_text=html_report,
             email_subject=_build_email_subject(settings, "Smoke check"),
-            ntfy_title=f"Bilety watcher: smoke {'FAIL' if smoke_failed else 'OK'}",
+            ntfy_title=f"Notification tracker: smoke {'FAIL' if smoke_failed else 'OK'}",
             ntfy_priority=(
                 settings.ntfy_priority_smoke_failure if smoke_failed else settings.ntfy_priority_smoke_success
             ),
@@ -265,72 +307,95 @@ def run_once(print_events: bool = False, dry_run: bool = False) -> int:
     settings = load_settings()
     client = SourceClient(settings)
     store = StateStore(settings.state_db_path)
-    ntfy_notifier = NtfyNotifier(
-        server=settings.ntfy_server,
-        topic=settings.ntfy_topic,
-        token=settings.ntfy_token,
-        username=settings.ntfy_username,
-        password=settings.ntfy_password,
-        timeout_seconds=settings.request_timeout_seconds,
-    )
-    telegram_notifier = TelegramNotifier(
-        bot_token=settings.telegram_bot_token,
-        chat_id=settings.telegram_chat_id,
-        timeout_seconds=settings.request_timeout_seconds,
-    )
-    signal_notifier = SignalNotifier(
-        cli_path=settings.signal_cli_path,
-        account=settings.signal_account,
-        recipients=settings.signal_recipients,
-        timeout_seconds=settings.signal_timeout_seconds,
-    )
-    email_notifier = EmailNotifier(
-        smtp_host=settings.smtp_host,
-        smtp_port=settings.smtp_port,
-        smtp_username=settings.smtp_username,
-        smtp_password=settings.smtp_password,
-        smtp_use_tls=settings.smtp_use_tls,
-        sender=settings.email_from,
-        recipients=settings.email_to,
-        timeout_seconds=settings.request_timeout_seconds,
-    )
+    notifiers = _build_notifiers(settings)
 
     try:
-        events = _fetch_events(client)
-        logger.info("total events: %d", len(events))
+        ticket_events = _fetch_events(client)
+        logger.info("total ticket events: %d", len(ticket_events))
+        price_observations = _fetch_price_observations(client)
+        logger.info("total price observations: %d", len(price_observations))
 
         if print_events:
             grouped = defaultdict(list)
-            for event in sorted(events, key=lambda e: (e.play.casefold(), e.date, e.time, e.source)):
+            for event in sorted(ticket_events, key=lambda e: (e.play.casefold(), e.date, e.time, e.source)):
                 grouped[event.play].append(event.to_dict())
-            print(json.dumps(grouped, ensure_ascii=False, indent=2))
+            payload = {
+                "tickets": grouped,
+                "prices": [obs.to_dict() for obs in price_observations],
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-        alerts = store.diff_and_upsert(events)
-        if not alerts:
+        ticket_alerts = store.diff_and_upsert(ticket_events)
+        price_alerts = store.record_price_observations(
+            price_observations,
+            min_observations_for_trend=settings.price_min_observations_for_trend,
+            trend_window_size=settings.price_trend_window_size,
+            drop_alert_percent=settings.price_drop_alert_percent,
+            rise_alert_percent=settings.price_rise_alert_percent,
+            alert_cooldown_hours=settings.price_alert_cooldown_hours,
+        )
+
+        if not ticket_alerts and not price_alerts:
             logger.info("no changes detected")
             return 0
 
-        logger.info("alerts generated: %d", len(alerts))
-        message_html = format_alerts(alerts)
-        message_plain = format_alerts_plain(alerts)
+        logger.info(
+            "alerts generated: ticket=%d, price=%d",
+            len(ticket_alerts),
+            len(price_alerts),
+        )
+
+        html_parts: list[str] = []
+        plain_parts: list[str] = []
+        if ticket_alerts:
+            html_parts.append(format_alerts(ticket_alerts))
+            plain_parts.append(format_alerts_plain(ticket_alerts))
+        if price_alerts:
+            html_parts.append(format_price_alerts(price_alerts))
+            plain_parts.append(format_price_alerts_plain(price_alerts))
+
+        message_html = "\n\n".join(part for part in html_parts if part.strip())
+        message_plain = "\n\n".join(part for part in plain_parts if part.strip())
         print(message_plain)
 
         if dry_run:
             logger.info("dry-run enabled, notification send skipped")
             return 0
 
+        if ticket_alerts and not price_alerts:
+            ntfy_priority = settings.ntfy_priority_alerts
+            ntfy_title = "Notification tracker: ticket alerts"
+            allow_email_fallback = settings.email_fallback_on_ticket_alerts
+            email_subject = _build_email_subject(settings, "Nowe alerty biletowe")
+            ntfy_tags = settings.ntfy_tags_alerts
+        elif price_alerts and not ticket_alerts:
+            ntfy_priority = settings.ntfy_priority_price_alerts
+            ntfy_title = "Notification tracker: price trend alerts"
+            allow_email_fallback = settings.email_fallback_on_price_alerts
+            email_subject = _build_email_subject(settings, "Alert trendu cen")
+            ntfy_tags = settings.ntfy_tags_price_alerts
+        else:
+            ntfy_priority = settings.ntfy_priority_alerts
+            ntfy_title = "Notification tracker: combined alerts"
+            allow_email_fallback = settings.email_fallback_on_ticket_alerts or settings.email_fallback_on_price_alerts
+            email_subject = _build_email_subject(settings, "Alerty (tickets + prices)")
+            ntfy_tags = []
+            for tag in settings.ntfy_tags_alerts + settings.ntfy_tags_price_alerts:
+                if tag and tag not in ntfy_tags:
+                    ntfy_tags.append(tag)
+
         route = _send_notification_with_fallback(
-            ntfy_notifier=ntfy_notifier,
-            signal_notifier=signal_notifier,
-            email_notifier=email_notifier,
-            telegram_notifier=telegram_notifier,
+            ntfy_notifier=notifiers.ntfy,
+            signal_notifier=notifiers.signal,
+            email_notifier=notifiers.email,
+            telegram_notifier=notifiers.telegram,
             plain_text=message_plain,
             html_text=message_html,
-            email_subject=_build_email_subject(settings, "Nowe alerty biletowe"),
-            ntfy_title="Bilety watcher: nowe alerty",
-            ntfy_priority=settings.ntfy_priority_alerts,
-            ntfy_tags=settings.ntfy_tags_alerts,
-            allow_email_fallback=settings.email_fallback_on_ticket_alerts,
+            email_subject=email_subject,
+            ntfy_title=ntfy_title,
+            ntfy_priority=ntfy_priority,
+            ntfy_tags=ntfy_tags,
+            allow_email_fallback=allow_email_fallback,
         )
         if route is None:
             logger.warning("no notification channel configured/working; alert printed only")
@@ -352,7 +417,7 @@ def watch_loop(print_events: bool = False, dry_run: bool = False) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Watcher biletów: Dziady/Wesele")
+    parser = argparse.ArgumentParser(description="Notification tracker: bilety + trend cen")
     sub = parser.add_subparsers(dest="command", required=True)
 
     run_once_cmd = sub.add_parser("run-once", help="Jedno sprawdzenie i ewentualne alerty")
@@ -397,8 +462,8 @@ def main() -> int:
             logger.error("NTFY_SERVER / NTFY_TOPIC are missing")
             return 2
         notifier.send_text(
-            "Test: watcher działa i może wysyłać alerty przez ntfy.",
-            title="Bilety watcher: test ntfy",
+            "Test: notification tracker działa i może wysyłać alerty przez ntfy.",
+            title="Notification tracker: test ntfy",
             priority=settings.ntfy_priority_alerts,
             tags=settings.ntfy_tags_alerts,
         )

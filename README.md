@@ -12,12 +12,14 @@ Architektura jest przygotowana pod kolejne źródła i use-case'y trackerowe (ni
   wykrywa nowe terminy pojawiające się w systemie.
 - `biletomat` (opcjonalnie): wykrywa terminy widoczne na stronie wydarzenia.
 - `facebook` (opcjonalnie, Graph API): filtruje posty tylko po słowach kluczowych (np. `Dziady`, `Wesele`).
+- `price_monitoring` (opcjonalnie): monitoruje trend cen produktów z podanych stron ofertowych
+  i wykrywa istotne spadki/wzrosty cen dla zapytania (np. SSD NVMe M.2).
 
 ## Gdzie trafiają alerty
 
 - jeśli ntfy jest skonfigurowane (`NTFY_SERVER` + `NTFY_TOPIC`): alerty idą przez ntfy,
 - jeśli ntfy zawiedzie lub nie jest ustawione, watcher próbuje Signal (`SIGNAL_ACCOUNT` + `SIGNAL_RECIPIENTS`),
-- jeśli email fallback dla alertów jest włączony (`EMAIL_FALLBACK_ON_TICKET_ALERTS=true`), watcher próbuje email (`SMTP_*` + `EMAIL_FROM` + `EMAIL_TO`),
+- jeśli email fallback dla alertów jest włączony (`EMAIL_FALLBACK_ON_TICKET_ALERTS=true` lub `EMAIL_FALLBACK_ON_PRICE_ALERTS=true`), watcher próbuje email (`SMTP_*` + `EMAIL_FROM` + `EMAIL_TO`),
 - jeśli email też nie działa, watcher próbuje Telegram (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`),
 - jeśli żaden kanał nie jest skonfigurowany/dostępny: alerty są wypisywane w logu STDOUT (`journalctl`).
 
@@ -55,6 +57,34 @@ python -m watcher run-once
   test kanału Signal.
 - `python -m watcher test-email`  
   test kanału email.
+
+## Monitoring trendu cen (NVMe SSD M.2)
+
+Skonfiguruj:
+
+- `ENABLE_PRICE_MONITORING=true`
+- `PRICE_SOURCE_URLS=<url1>,<url2>,...` (strony listingu/ofert lub trendów, np. `https://pcpartpicker.com/trends/price/internal-hard-drive/`)
+- `PRICE_QUERY_LABEL=NVMe SSD M.2` (etykieta w alertach)
+
+Dla strony trendów PCPartPicker parser pobiera wykresy i wylicza indeks trendu (0-100) z prawej krawędzi linii trendu.
+W przypadku blokady Cloudflare możesz podać bezpośrednio URL-e obrazków trendów:
+
+- `PRICE_TREND_IMAGE_URLS=<img_url1>,<img_url2>,...`
+
+Dopasowanie pojemności jest miękkie (nie twardy filtr):
+
+- `PRICE_PREFERRED_CAPACITY_TB=4.0`
+- `PRICE_CAPACITY_SOFT_TOLERANCE_TB=2.0`
+
+To oznacza, że tracker preferuje okolice 4TB, ale nadal może brać pod uwagę inne pojemności, jeśli są silnie trafne dla zapytania.
+
+Trend jest liczony względem mediany z historii:
+
+- `PRICE_MIN_OBSERVATIONS_FOR_TREND=4`
+- `PRICE_TREND_WINDOW_SIZE=8`
+- `PRICE_DROP_ALERT_PERCENT=5.0`
+- `PRICE_RISE_ALERT_PERCENT=8.0`
+- `PRICE_ALERT_COOLDOWN_HOURS=24`
 
 ## Facebook (strona i grupa)
 
@@ -102,6 +132,7 @@ Konfiguracja email fallback:
 - `EMAIL_FROM`, `EMAIL_TO`
 - opcjonalnie autoryzacja: `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_USE_TLS`
 - dla zwykłych alertów biletowych: `EMAIL_FALLBACK_ON_TICKET_ALERTS=true` (domyślnie `false`)
+- dla alertów trendu cen: `EMAIL_FALLBACK_ON_PRICE_ALERTS=true` (domyślnie `true`)
 
 Kolejność wysyłki: `ntfy -> Signal -> (opcjonalnie) Email -> Telegram`.
 
